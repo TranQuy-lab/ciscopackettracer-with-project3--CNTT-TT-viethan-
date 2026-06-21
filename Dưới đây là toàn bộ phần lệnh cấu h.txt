@@ -1,0 +1,1925 @@
+Toàn bộ phần lệnh cấu hình - ĐÃ CHỈNH CHO PACKET TRACER 8.2+ (copy-paste chạy được).
+
+Phương án: CORE-SW1/CORE-SW2 -> SW-TRANSIT-ASA -> ASA-K -> EDGE-K -> ISP -> ROUTER-V.
+Server Farm 10.10.200.0/28 nay là VLAN 200 ĐỊNH TUYẾN TRÊN CORE (HSRP), không còn cắm
+riêng vào ASA. ASA-K có 3 vùng: inside / dmz / outside. ASA 5506-X dùng cổng GigabitEthernet routed trực tiếp (không có switch nội bộ như 5505).
+AP dùng VLAN quản lý riêng 110, WiFi giáo viên/sinh viên qua WLC.
+
+========================================================================
+THIẾT BỊ DÙNG TRONG PACKET TRACER (chọn đúng model thì không lỗi lệnh):
+- CORE-SW1, CORE-SW2: Switch 3560-24PS (Multilayer) -> fa0/1-24 + gi0/1-2, có ip routing/HSRP.
+- AS-* (access): Switch 2960-24TT -> fa0/1-24 + gi0/1-2.
+- ASA-K: ASA 5506-X. Port GigabitEthernet1/1..1/8 (routed interface, không dùng switchport/vlan).
+- EDGE-K, ROUTER-V, ISP: Router ISR 4331. Cắm thêm module NIM-2T để có serial0/1/0, serial0/1/1.
+  (Tắt nguồn router -> kéo NIM-2T vào khe trống -> bật nguồn lại.)
+- ISP là đầu DCE (đã đặt clock rate). EDGE-K và ROUTER-V là DTE (không cần clock rate).
+
+SƠ ĐỒ CẮM DÂY (tóm tắt):
+- CORE-SW1 gi0/1-2  <-> CORE-SW2 gi0/1-2        (EtherChannel Po1)
+- CORE-SW1/2 fa0/1-7 -> các AS-* gi0/1 (lên SW1) và gi0/2 (lên SW2)
+- CORE-SW1/2 fa0/8  -> AS-SERVER-PRIVATE gi0/1 (lên SW1) và gi0/2 (lên SW2)
+- CORE-SW1/2 fa0/23 -> WLC (trunk)
+- CORE-SW1/2 fa0/24 -> SW-TRANSIT-ASA gi0/1 (từ SW1) và gi0/2 (từ SW2)
+- SW-TRANSIT-ASA fa0/1 -> ASA-K Gi1/3 (inside)
+- ASA-K Gi1/2 -> EDGE-K gi0/0/0 (outside)
+- ASA-K Gi1/4 -> DMZ Web Server (dmz)
+- EDGE-K serial0/1/0 -> ISP serial0/1/0
+- ISP serial0/1/1 -> ROUTER-V serial0/1/0
+- ROUTER-V gi0/0/0 -> AS-KHUV gi0/1 (trunk)
+
+========================================================================
+
+# 1. CORE-SW1  (Switch 3560)
+
+```bash
+enable
+conf t
+hostname CORE-SW1
+no ip domain-lookup
+ip routing
+
+! =========================
+! VTP (transparent: moi switch tu giu VLAN, tranh bi ghi de revision)
+! =========================
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+! =========================
+! VLAN DATABASE
+! =========================
+vlan 10
+ name BGH_ADMIN
+vlan 20
+ name ESTI
+vlan 30
+ name LAB
+vlan 40
+ name TOA_B_THUONG
+vlan 50
+ name TOA_C
+vlan 70
+ name D1_VKU_STAFF
+vlan 80
+ name TOA_A
+vlan 90
+ name VOICE
+vlan 99
+ name NET_MGMT
+vlan 100
+ name CORE_ASA_TRANSIT
+vlan 110
+ name AP_MGMT
+vlan 120
+ name WIFI_GIAOVIEN
+vlan 130
+ name WIFI_SINHVIEN
+vlan 200
+ name SERVER_PRIVATE
+vlan 999
+ name BLACKHOLE_UNUSED
+
+! =========================
+! RAPID PVST+
+! =========================
+spanning-tree mode rapid-pvst
+! SINGLE-ACTIVE: CORE-SW1 lam root + HSRP active cho TAT CA VLAN.
+! Dam bao chieu di va chieu ve cung qua mot core -> het bat doi xung/flood/loop.
+spanning-tree vlan 10,20,30,40,50,70,80,90,99,100,110,120,130,200 root primary
+
+! =========================
+! LACP ETHERCHANNEL TO CORE-SW2
+! =========================
+interface range gigabitEthernet0/1 - 2
+ description LACP_TO_CORE-SW2
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20,30,40,50,70,80,90,99,100,110,120,130,200
+ channel-group 1 mode active
+ no shutdown
+exit
+
+interface port-channel1
+ description PO1_INTERCORE_TO_CORE-SW2
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20,30,40,50,70,80,90,99,100,110,120,130,200
+ no shutdown
+
+! =========================
+! TRUNK TO ACCESS SWITCHES
+! =========================
+interface fa0/1
+ description TRUNK_TO_AS-HANHCHINH
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 10,90,99,110
+ no shutdown
+
+interface fa0/2
+ description TRUNK_TO_AS-ESTI
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 20,99,110
+ no shutdown
+
+interface fa0/3
+ description TRUNK_TO_AS-TOAB-LAB
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 30,99,110
+ no shutdown
+
+interface fa0/4
+ description TRUNK_TO_AS-TOAB-THUONG
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 40,99,110
+ no shutdown
+
+interface fa0/5
+ description TRUNK_TO_AS-TOAC
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 50,99,110
+ no shutdown
+
+interface fa0/6
+ description TRUNK_TO_AS-TOAA
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 80,99,110
+ no shutdown
+
+interface fa0/7
+ description TRUNK_TO_AS-D1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 70,99,110
+ no shutdown
+
+! =========================
+! TRUNK TO AS-SERVER-PRIVATE
+! =========================
+interface fa0/8
+ description TRUNK_TO_AS-SERVER-PRIVATE
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 99,200
+ no shutdown
+
+! =========================
+! TRUNK TO WLC
+! =========================
+interface fa0/23
+ description TRUNK_TO_WLC
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk native vlan 99
+ switchport trunk allowed vlan 99,120,130
+ no shutdown
+
+! =========================
+! LINK TO SW-TRANSIT-ASA
+! =========================
+interface fa0/24
+ description TO_SW-TRANSIT-ASA_VLAN100
+ switchport mode access
+ switchport access vlan 100
+ no shutdown
+
+! =========================
+! HSRP SVIs
+! DHCP SERVER: 10.10.200.4
+! =========================
+interface vlan10
+ description SVI_BGH_ADMIN
+ ip address 10.10.10.2 255.255.255.0
+ standby 10 ip 10.10.10.1
+ standby 10 priority 110
+ standby 10 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan20
+ description SVI_ESTI
+ ip address 10.10.20.2 255.255.255.0
+ standby 20 ip 10.10.20.1
+ standby 20 priority 110
+ standby 20 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan30
+ description SVI_LAB
+ ip address 10.10.30.2 255.255.255.0
+ standby 30 ip 10.10.30.1
+ standby 30 priority 110
+ standby 30 preempt
+ ip helper-address 10.10.200.4
+ ip access-group ACL_LAB_IN in
+ no shutdown
+
+interface vlan40
+ description SVI_TOA_B_THUONG
+ ip address 10.10.40.2 255.255.255.0
+ standby 40 ip 10.10.40.1
+ standby 40 priority 110
+ standby 40 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan50
+ description SVI_TOA_C
+ ip address 10.10.50.2 255.255.255.0
+ standby 50 ip 10.10.50.1
+ standby 50 priority 110
+ standby 50 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan70
+ description SVI_D1_VKU_STAFF
+ ip address 10.10.70.2 255.255.255.0
+ standby 70 ip 10.10.70.1
+ standby 70 priority 110
+ standby 70 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan80
+ description SVI_TOA_A
+ ip address 10.10.80.2 255.255.255.0
+ standby 80 ip 10.10.80.1
+ standby 80 priority 110
+ standby 80 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan90
+ description SVI_VOICE
+ ip address 10.10.90.2 255.255.255.0
+ standby 90 ip 10.10.90.1
+ standby 90 priority 110
+ standby 90 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan99
+ description SVI_NET_MGMT
+ ip address 10.10.99.2 255.255.255.0
+ standby 99 ip 10.10.99.1
+ standby 99 priority 110
+ standby 99 preempt
+ no shutdown
+
+interface vlan100
+ description SVI_CORE_ASA_TRANSIT
+ ip address 10.10.100.2 255.255.255.248
+ standby 100 ip 10.10.100.1
+ standby 100 priority 110
+ standby 100 preempt
+ no shutdown
+
+interface vlan110
+ description SVI_AP_MGMT
+ ip address 10.10.110.2 255.255.255.0
+ standby 110 ip 10.10.110.1
+ standby 110 priority 110
+ standby 110 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan120
+ description SVI_WIFI_GIAOVIEN
+ ip address 10.10.120.2 255.255.255.0
+ standby 120 ip 10.10.120.1
+ standby 120 priority 110
+ standby 120 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan130
+ description SVI_WIFI_SINHVIEN
+ ip address 10.10.128.2 255.255.248.0
+ standby 130 ip 10.10.128.1
+ standby 130 priority 110
+ standby 130 preempt
+ ip helper-address 10.10.200.4
+ ip access-group ACL_WIFI_SV_IN in
+ no shutdown
+
+interface vlan200
+ description SVI_SERVER_PRIVATE
+ ip address 10.10.200.12 255.255.255.240
+ standby 200 ip 10.10.200.1
+ standby 200 priority 110
+ standby 200 preempt
+ no shutdown
+
+! =========================
+! ACL
+! =========================
+ip access-list extended ACL_LAB_IN
+ permit udp any any eq 67
+ permit tcp 10.10.30.0 0.0.0.255 host 10.10.200.2 eq 80
+ permit tcp 10.10.30.0 0.0.0.255 host 10.10.200.2 eq 443
+ deny ip 10.10.30.0 0.0.0.255 10.10.10.0 0.0.0.255
+ deny ip 10.10.30.0 0.0.0.255 10.10.70.0 0.0.0.255
+ deny ip 10.10.30.0 0.0.0.255 10.10.200.0 0.0.0.15
+ permit ip 10.10.30.0 0.0.0.255 any
+
+ip access-list extended ACL_WIFI_SV_IN
+ permit udp any any eq 67
+ permit tcp 10.10.128.0 0.0.7.255 host 10.10.200.2 eq 80
+ permit tcp 10.10.128.0 0.0.7.255 host 10.10.200.2 eq 443
+ deny ip 10.10.128.0 0.0.7.255 10.10.10.0 0.0.0.255
+ deny ip 10.10.128.0 0.0.7.255 10.10.70.0 0.0.0.255
+ deny ip 10.10.128.0 0.0.7.255 10.10.200.0 0.0.0.15
+ permit ip 10.10.128.0 0.0.7.255 any
+
+! =========================
+! DEFAULT ROUTE TO ASA
+! =========================
+ip route 0.0.0.0 0.0.0.0 10.10.100.4
+
+end
+wr
+```
+
+---
+
+# 2. CORE-SW2  (Switch 3560)
+
+```bash
+enable
+conf t
+hostname CORE-SW2
+no ip domain-lookup
+ip routing
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 10
+ name BGH_ADMIN
+vlan 20
+ name ESTI
+vlan 30
+ name LAB
+vlan 40
+ name TOA_B_THUONG
+vlan 50
+ name TOA_C
+vlan 70
+ name D1_VKU_STAFF
+vlan 80
+ name TOA_A
+vlan 90
+ name VOICE
+vlan 99
+ name NET_MGMT
+vlan 100
+ name CORE_ASA_TRANSIT
+vlan 110
+ name AP_MGMT
+vlan 120
+ name WIFI_GIAOVIEN
+vlan 130
+ name WIFI_SINHVIEN
+vlan 200
+ name SERVER_PRIVATE
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+! SINGLE-ACTIVE: CORE-SW2 chi lam backup (root secondary, HSRP standby moi VLAN).
+spanning-tree vlan 10,20,30,40,50,70,80,90,99,100,110,120,130,200 root secondary
+
+interface range gigabitEthernet0/1 - 2
+ description LACP_TO_CORE-SW1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20,30,40,50,70,80,90,99,100,110,120,130,200
+ channel-group 1 mode active
+ no shutdown
+exit
+
+interface port-channel1
+ description PO1_INTERCORE_TO_CORE-SW1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20,30,40,50,70,80,90,99,100,110,120,130,200
+ no shutdown
+
+interface fa0/1
+ description TRUNK_TO_AS-HANHCHINH_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 10,90,99,110
+ no shutdown
+
+interface fa0/2
+ description TRUNK_TO_AS-ESTI_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 20,99,110
+ no shutdown
+
+interface fa0/3
+ description TRUNK_TO_AS-TOAB-LAB_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 30,99,110
+ no shutdown
+
+interface fa0/4
+ description TRUNK_TO_AS-TOAB-THUONG_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 40,99,110
+ no shutdown
+
+interface fa0/5
+ description TRUNK_TO_AS-TOAC_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 50,99,110
+ no shutdown
+
+interface fa0/6
+ description TRUNK_TO_AS-TOAA_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 80,99,110
+ no shutdown
+
+interface fa0/7
+ description TRUNK_TO_AS-D1_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 70,99,110
+ no shutdown
+
+interface fa0/8
+ description TRUNK_TO_AS-SERVER-PRIVATE_BACKUP
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk allowed vlan 99,200
+ no shutdown
+
+interface fa0/23
+ description TRUNK_TO_WLC
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk native vlan 99
+ switchport trunk allowed vlan 99,120,130
+ no shutdown
+
+interface fa0/24
+ description TO_SW-TRANSIT-ASA_VLAN100
+ switchport mode access
+ switchport access vlan 100
+ no shutdown
+
+interface vlan10
+ description SVI_BGH_ADMIN
+ ip address 10.10.10.3 255.255.255.0
+ standby 10 ip 10.10.10.1
+ standby 10 priority 90
+ standby 10 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan20
+ description SVI_ESTI
+ ip address 10.10.20.3 255.255.255.0
+ standby 20 ip 10.10.20.1
+ standby 20 priority 90
+ standby 20 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan30
+ description SVI_LAB
+ ip address 10.10.30.3 255.255.255.0
+ standby 30 ip 10.10.30.1
+ standby 30 priority 90
+ standby 30 preempt
+ ip helper-address 10.10.200.4
+ ip access-group ACL_LAB_IN in
+ no shutdown
+
+interface vlan40
+ description SVI_TOA_B_THUONG
+ ip address 10.10.40.3 255.255.255.0
+ standby 40 ip 10.10.40.1
+ standby 40 priority 90
+ standby 40 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan50
+ description SVI_TOA_C
+ ip address 10.10.50.3 255.255.255.0
+ standby 50 ip 10.10.50.1
+ standby 50 priority 90
+ standby 50 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan70
+ description SVI_D1_VKU_STAFF
+ ip address 10.10.70.3 255.255.255.0
+ standby 70 ip 10.10.70.1
+ standby 70 priority 90
+ standby 70 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan80
+ description SVI_TOA_A
+ ip address 10.10.80.3 255.255.255.0
+ standby 80 ip 10.10.80.1
+ standby 80 priority 90
+ standby 80 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan90
+ description SVI_VOICE
+ ip address 10.10.90.3 255.255.255.0
+ standby 90 ip 10.10.90.1
+ standby 90 priority 90
+ standby 90 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan99
+ description SVI_NET_MGMT
+ ip address 10.10.99.3 255.255.255.0
+ standby 99 ip 10.10.99.1
+ standby 99 priority 90
+ standby 99 preempt
+ no shutdown
+
+interface vlan100
+ description SVI_CORE_ASA_TRANSIT
+ ip address 10.10.100.3 255.255.255.248
+ standby 100 ip 10.10.100.1
+ standby 100 priority 90
+ standby 100 preempt
+ no shutdown
+
+interface vlan110
+ description SVI_AP_MGMT
+ ip address 10.10.110.3 255.255.255.0
+ standby 110 ip 10.10.110.1
+ standby 110 priority 90
+ standby 110 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan120
+ description SVI_WIFI_GIAOVIEN
+ ip address 10.10.120.3 255.255.255.0
+ standby 120 ip 10.10.120.1
+ standby 120 priority 90
+ standby 120 preempt
+ ip helper-address 10.10.200.4
+ no shutdown
+
+interface vlan130
+ description SVI_WIFI_SINHVIEN
+ ip address 10.10.128.3 255.255.248.0
+ standby 130 ip 10.10.128.1
+ standby 130 priority 90
+ standby 130 preempt
+ ip helper-address 10.10.200.4
+ ip access-group ACL_WIFI_SV_IN in
+ no shutdown
+
+interface vlan200
+ description SVI_SERVER_PRIVATE
+ ip address 10.10.200.13 255.255.255.240
+ standby 200 ip 10.10.200.1
+ standby 200 priority 90
+ standby 200 preempt
+ no shutdown
+
+ip access-list extended ACL_LAB_IN
+ permit udp any any eq 67
+ permit tcp 10.10.30.0 0.0.0.255 host 10.10.200.2 eq 80
+ permit tcp 10.10.30.0 0.0.0.255 host 10.10.200.2 eq 443
+ deny ip 10.10.30.0 0.0.0.255 10.10.10.0 0.0.0.255
+ deny ip 10.10.30.0 0.0.0.255 10.10.70.0 0.0.0.255
+ deny ip 10.10.30.0 0.0.0.255 10.10.200.0 0.0.0.15
+ permit ip 10.10.30.0 0.0.0.255 any
+
+ip access-list extended ACL_WIFI_SV_IN
+ permit udp any any eq 67
+ permit tcp 10.10.128.0 0.0.7.255 host 10.10.200.2 eq 80
+ permit tcp 10.10.128.0 0.0.7.255 host 10.10.200.2 eq 443
+ deny ip 10.10.128.0 0.0.7.255 10.10.10.0 0.0.0.255
+ deny ip 10.10.128.0 0.0.7.255 10.10.70.0 0.0.0.255
+ deny ip 10.10.128.0 0.0.7.255 10.10.200.0 0.0.0.15
+ permit ip 10.10.128.0 0.0.7.255 any
+
+ip route 0.0.0.0 0.0.0.0 10.10.100.4
+
+end
+wr
+```
+
+---
+
+# 3. SW-TRANSIT-ASA  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname SW-TRANSIT-ASA
+no ip domain-lookup
+
+vtp mode transparent
+vlan 100
+ name CORE_ASA_TRANSIT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+interface gigabitEthernet0/1
+ description TO_CORE-SW1
+ switchport mode access
+ switchport access vlan 100
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TO_CORE-SW2
+ switchport mode access
+ switchport access vlan 100
+ no shutdown
+
+interface fa0/1
+ description TO_ASA_INSIDE
+ switchport mode access
+ switchport access vlan 100
+ spanning-tree portfast
+ no shutdown
+
+interface range fastEthernet0/2 - 24
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 4. AS-SERVER-PRIVATE  (Switch 2960)
+
+Server Farm nay nối lên CORE qua trunk (VLAN 200, gateway HSRP 10.10.200.1).
+Quản lý switch qua VLAN 99 (giống các access switch khác).
+
+```bash
+enable
+conf t
+hostname AS-SERVER-PRIVATE
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 99
+ name NET_MGMT
+vlan 200
+ name SERVER_PRIVATE
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 99,200
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 99,200
+ no shutdown
+
+interface fastEthernet0/1
+ description WEB_SERVER_NOI_BO_10.10.200.2
+ switchport mode access
+ switchport access vlan 200
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface fastEthernet0/2
+ description DHCP_DNS_SERVER_10.10.200.4
+ switchport mode access
+ switchport access vlan 200
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface fastEthernet0/3
+ description DATABASE_SERVER_10.10.200.5
+ switchport mode access
+ switchport access vlan 200
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface fastEthernet0/4
+ description FILE_APP_SERVER_10.10.200.6
+ switchport mode access
+ switchport access vlan 200
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.18 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/5 - 24
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 5. AS-HANHCHINH  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-HANHCHINH
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 10
+ name BGH_ADMIN
+vlan 90
+ name VOICE
+vlan 99
+ name NET_MGMT
+vlan 110
+ name AP_MGMT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+ip dhcp snooping
+ip dhcp snooping vlan 10,110
+no ip dhcp snooping information option
+ip arp inspection vlan 10,110
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 10,90,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 10,90,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface range fastEthernet0/1 - 10
+ description PC_BGH_ADMIN
+ switchport mode access
+ switchport access vlan 10
+ switchport voice vlan 90
+ switchport port-security
+ switchport port-security maximum 3
+ switchport port-security mac-address sticky
+ switchport port-security violation restrict
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range fastEthernet0/20 - 24
+ description LIGHTWEIGHT_AP_HANHCHINH
+ switchport mode access
+ switchport access vlan 110
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.11 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/11 - 19
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 6. AS-ESTI  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-ESTI
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 20
+ name ESTI
+vlan 99
+ name NET_MGMT
+vlan 110
+ name AP_MGMT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+ip dhcp snooping
+ip dhcp snooping vlan 20,110
+no ip dhcp snooping information option
+ip arp inspection vlan 20,110
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 20,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 20,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface range fastEthernet0/1 - 15
+ description PC_ESTI
+ switchport mode access
+ switchport access vlan 20
+ switchport port-security
+ switchport port-security maximum 1
+ switchport port-security mac-address sticky
+ switchport port-security violation restrict
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range fastEthernet0/20 - 24
+ description LIGHTWEIGHT_AP_ESTI
+ switchport mode access
+ switchport access vlan 110
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.12 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/16 - 19
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 7. AS-TOAB-LAB  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-TOAB-LAB
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 30
+ name LAB
+vlan 99
+ name NET_MGMT
+vlan 110
+ name AP_MGMT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+ip dhcp snooping
+ip dhcp snooping vlan 30,110
+no ip dhcp snooping information option
+ip arp inspection vlan 30,110
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 30,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 30,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface range fastEthernet0/1 - 15
+ description PC_LAB
+ switchport mode access
+ switchport access vlan 30
+ switchport port-security
+ switchport port-security maximum 1
+ switchport port-security mac-address sticky
+ switchport port-security violation restrict
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range fastEthernet0/20 - 24
+ description LIGHTWEIGHT_AP_LAB
+ switchport mode access
+ switchport access vlan 110
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.13 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/16 - 19
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 8. AS-TOAB-THUONG  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-TOAB-THUONG
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 40
+ name TOA_B_THUONG
+vlan 99
+ name NET_MGMT
+vlan 110
+ name AP_MGMT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+ip dhcp snooping
+ip dhcp snooping vlan 40,110
+no ip dhcp snooping information option
+ip arp inspection vlan 40,110
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 40,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 40,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface range fastEthernet0/1 - 15
+ description PC_TOA_B_THUONG
+ switchport mode access
+ switchport access vlan 40
+ switchport port-security
+ switchport port-security maximum 1
+ switchport port-security mac-address sticky
+ switchport port-security violation restrict
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range fastEthernet0/20 - 24
+ description LIGHTWEIGHT_AP_TOA_B_THUONG
+ switchport mode access
+ switchport access vlan 110
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.14 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/16 - 19
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 9. AS-TOAC  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-TOAC
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 50
+ name TOA_C
+vlan 99
+ name NET_MGMT
+vlan 110
+ name AP_MGMT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+ip dhcp snooping
+ip dhcp snooping vlan 50,110
+no ip dhcp snooping information option
+ip arp inspection vlan 50,110
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 50,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 50,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface range fastEthernet0/1 - 15
+ description PC_TOA_C
+ switchport mode access
+ switchport access vlan 50
+ switchport port-security
+ switchport port-security maximum 1
+ switchport port-security mac-address sticky
+ switchport port-security violation restrict
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range fastEthernet0/20 - 24
+ description LIGHTWEIGHT_AP_TOA_C
+ switchport mode access
+ switchport access vlan 110
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.15 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/16 - 19
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 10. AS-TOAA  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-TOAA
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 80
+ name TOA_A
+vlan 99
+ name NET_MGMT
+vlan 110
+ name AP_MGMT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+ip dhcp snooping
+ip dhcp snooping vlan 80,110
+no ip dhcp snooping information option
+ip arp inspection vlan 80,110
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 80,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 80,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface range fastEthernet0/1 - 15
+ description PC_TOA_A
+ switchport mode access
+ switchport access vlan 80
+ switchport port-security
+ switchport port-security maximum 1
+ switchport port-security mac-address sticky
+ switchport port-security violation restrict
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range fastEthernet0/20 - 24
+ description LIGHTWEIGHT_AP_TOA_A
+ switchport mode access
+ switchport access vlan 110
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.16 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/16 - 19
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 11. AS-D1  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-D1
+no ip domain-lookup
+
+vtp domain VKU-CAMPUS
+vtp mode transparent
+vtp version 2
+
+vlan 70
+ name D1_VKU_STAFF
+vlan 99
+ name NET_MGMT
+vlan 110
+ name AP_MGMT
+vlan 999
+ name BLACKHOLE_UNUSED
+
+spanning-tree mode rapid-pvst
+
+ip dhcp snooping
+ip dhcp snooping vlan 70,110
+no ip dhcp snooping information option
+ip arp inspection vlan 70,110
+
+interface gigabitEthernet0/1
+ description TRUNK_TO_CORE-SW1
+ switchport mode trunk
+ switchport trunk allowed vlan 70,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface gigabitEthernet0/2
+ description TRUNK_TO_CORE-SW2
+ switchport mode trunk
+ switchport trunk allowed vlan 70,99,110
+ ip dhcp snooping trust
+ ip arp inspection trust
+ no shutdown
+
+interface range fastEthernet0/1 - 15
+ description PC_D1_VKU_STAFF
+ switchport mode access
+ switchport access vlan 70
+ switchport port-security
+ switchport port-security maximum 1
+ switchport port-security mac-address sticky
+ switchport port-security violation restrict
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range fastEthernet0/19 - 24
+ description LIGHTWEIGHT_AP_D1
+ switchport mode access
+ switchport access vlan 110
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface vlan99
+ description MANAGEMENT_INTERFACE
+ ip address 10.10.99.17 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.10.99.1
+
+interface range fastEthernet0/16 - 18
+ description UNUSED_PORT
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+
+end
+wr
+```
+
+---
+
+# 12. ASA-K  (ASA 5506-X)
+
+ASA 5506-X có 8 cổng GigabitEthernet định tuyến (routed), không có switch nội bộ.
+Mỗi cổng cấu hình nameif / security-level / ip address trực tiếp — không dùng VLAN phụ.
+- Gi1/1 = Management (management-only, dùng kết nối máy quản lý OOB nếu cần).
+- Gi1/2 = outside → EDGE-K gi0/0/0   (172.16.0.1/30,    security-level 0)
+- Gi1/3 = inside  → SW-TRANSIT-ASA fa0/1  (10.10.100.4/29, security-level 100)
+- Gi1/4 = dmz     → DMZ Web Server   (172.16.10.1/24,  security-level 50)
+Không giới hạn zone theo license → bỏ hoàn toàn "no forward interface vlanX".
+
+```bash
+enable
+conf t
+hostname ASA-K
+
+! =========================
+! MANAGEMENT (Gi1/1 - chi ket noi may quan ly OOB, khong chay data)
+! Neu PT bao loi "management-only", them "no management-only" de dung lam data port.
+! =========================
+interface GigabitEthernet1/1
+ management-only
+ no shutdown
+
+! =========================
+! OUTSIDE (Gi1/2 -> EDGE-K gi0/0/0)
+! =========================
+interface GigabitEthernet1/2
+ description TO_EDGE-K_OUTSIDE
+ nameif outside
+ security-level 0
+ ip address 172.16.0.1 255.255.255.252
+ no shutdown
+
+! =========================
+! INSIDE (Gi1/3 -> SW-TRANSIT-ASA fa0/1)
+! =========================
+interface GigabitEthernet1/3
+ description TO_SW-TRANSIT-ASA_INSIDE
+ nameif inside
+ security-level 100
+ ip address 10.10.100.4 255.255.255.248
+ no shutdown
+
+! =========================
+! DMZ (Gi1/4 -> DMZ Web Server 172.16.10.10)
+! Khong can "no forward" - 5506-X la full routed platform, khong bi han che license.
+! =========================
+interface GigabitEthernet1/4
+ description DMZ_WEB_SERVER
+ nameif dmz
+ security-level 50
+ ip address 172.16.10.1 255.255.255.0
+ no shutdown
+
+! =========================
+! TAT CAC CONG CHUA SU DUNG
+! =========================
+interface GigabitEthernet1/5
+ shutdown
+interface GigabitEthernet1/6
+ shutdown
+interface GigabitEthernet1/7
+ shutdown
+interface GigabitEthernet1/8
+ shutdown
+
+! =========================
+! ROUTING
+! =========================
+! SINGLE-ACTIVE: next-hop ve campus qua HSRP VIP (active tren CORE-SW1).
+route inside 10.10.0.0 255.255.0.0 10.10.100.1
+! Ve khu V qua EDGE-K
+route outside 10.20.0.0 255.255.0.0 172.16.0.2
+! Default route ra Internet
+route outside 0.0.0.0 0.0.0.0 172.16.0.2
+
+! =========================
+! ACL INSIDE: cho campus di ra outside va dmz
+! =========================
+access-list INSIDE_IN extended permit ip 10.10.0.0 255.255.0.0 any
+access-group INSIDE_IN in interface inside
+
+! =========================
+! ACL OUTSIDE:
+! - Cho khu V (10.20) khoi tao toi campus (qua VPN)
+! - Cho truy cap Web DMZ tu Internet (port 80/443)
+! =========================
+access-list OUTSIDE_IN extended permit ip 10.20.0.0 255.255.0.0 10.10.0.0 255.255.0.0
+access-list OUTSIDE_IN extended permit tcp any host 172.16.10.10 eq 80
+access-list OUTSIDE_IN extended permit tcp any host 172.16.10.10 eq 443
+access-group OUTSIDE_IN in interface outside
+
+! =========================
+! INSPECT ICMP (bat buoc cho ping co reply tra ve)
+! Neu PT bao "Invalid input" tai "match default-inspection-traffic"
+! thi dung phuong an ACL du phong o phan ghi chu phia duoi.
+! =========================
+class-map inspection_default
+ match default-inspection-traffic
+exit
+policy-map global_policy
+ class inspection_default
+  inspect icmp
+exit
+service-policy global_policy global
+
+end
+write memory
+```
+
+GHI CHÚ INSPECT ICMP (dự phòng nếu PT báo lỗi):
+- Bỏ class-map/policy-map; thêm 2 dòng vào ACL OUTSIDE_IN thay thế:
+    access-list OUTSIDE_IN extended permit icmp any any echo-reply
+    access-list OUTSIDE_IN extended permit icmp any any unreachable
+- Kiểm tra: show service-policy (phải thấy "Inspect: icmp").
+
+GHI CHÚ ASA 5506-X:
+- inside → dmz và inside → outside: tự cho phép (security-level cao → thấp).
+- outside → inside: bị chặn mặc định; chỉ cho phép theo ACL OUTSIDE_IN.
+- dmz → inside: bị chặn mặc định (security 50 → 100 phải qua ACL riêng nếu cần).
+- ASA KHÔNG NAT; việc NAT ra Internet do EDGE-K đảm nhiệm.
+- Khác ASA 5505: bỏ "switchport access vlan X" và "interface vlanX";
+  5506-X là routed platform, mỗi cổng GigabitEthernet là L3 interface độc lập.
+---
+
+# 13. EDGE-K  (Router ISR 4331 + NIM-2T)
+
+```bash
+enable
+conf t
+hostname EDGE-K
+no ip domain-lookup
+
+interface gigabitEthernet0/0/0
+ description TO_ASA_OUTSIDE
+ ip address 172.16.0.2 255.255.255.252
+ ip nat inside
+ no shutdown
+
+interface serial0/1/0
+ description TO_ISP
+ ip address 203.0.113.2 255.255.255.252
+ ip nat outside
+ no shutdown
+
+! =========================
+! ROUTING
+! =========================
+ip route 10.10.0.0 255.255.0.0 172.16.0.1
+ip route 172.16.10.0 255.255.255.0 172.16.0.1
+ip route 0.0.0.0 0.0.0.0 203.0.113.1
+
+! =========================
+! NAT OVERLOAD (khong NAT traffic di VPN sang khu V)
+! =========================
+ip access-list extended NAT_K
+ deny ip 10.10.0.0 0.0.255.255 10.20.0.0 0.0.255.255
+ permit ip 10.10.0.0 0.0.255.255 any
+ permit ip 172.16.10.0 0.0.0.255 any
+exit
+
+ip nat inside source list NAT_K interface serial0/1/0 overload
+
+! Static NAT / Port Forwarding cho Web Server DMZ
+! (PT khong nhan tu khoa "interface" trong static NAT -> ghi thang IP outside)
+ip nat inside source static tcp 172.16.10.10 80 203.0.113.2 80
+ip nat inside source static tcp 172.16.10.10 443 203.0.113.2 443
+
+! =========================
+! IPSEC VPN PHASE 1
+! =========================
+crypto isakmp policy 10
+ encr aes
+ hash sha
+ authentication pre-share
+ group 2
+ lifetime 86400
+exit
+
+crypto isakmp key VKU-VPN-KEY address 198.51.100.2
+
+! =========================
+! IPSEC VPN PHASE 2
+! =========================
+crypto ipsec transform-set TS-VKU esp-aes esp-sha-hmac
+
+ip access-list extended VPN_TRAFFIC
+ permit ip 10.10.0.0 0.0.255.255 10.20.0.0 0.0.255.255
+exit
+
+crypto map VPN-MAP 10 ipsec-isakmp
+ description VPN_TO_KHU_V
+ set peer 198.51.100.2
+ set transform-set TS-VKU
+ match address VPN_TRAFFIC
+exit
+
+interface serial0/1/0
+ crypto map VPN-MAP
+exit
+
+! =========================
+! QOS MAU CHO WIFI (CBWFQ - tren PT mang tinh minh hoa)
+! =========================
+ip access-list extended ACL_QOS_WIFI_STUDENT
+ permit ip 10.10.128.0 0.0.7.255 any
+exit
+
+ip access-list extended ACL_QOS_WIFI_TEACHER
+ permit ip 10.10.120.0 0.0.0.255 any
+exit
+
+class-map match-any CLASS_WIFI_STUDENT
+ match access-group name ACL_QOS_WIFI_STUDENT
+exit
+
+class-map match-any CLASS_WIFI_TEACHER
+ match access-group name ACL_QOS_WIFI_TEACHER
+exit
+
+policy-map CAMPUS_QOS_OUT
+ class CLASS_WIFI_STUDENT
+  bandwidth percent 50
+ class CLASS_WIFI_TEACHER
+  bandwidth percent 20
+ class class-default
+  fair-queue
+exit
+
+interface serial0/1/0
+ service-policy output CAMPUS_QOS_OUT
+exit
+
+end
+wr
+```
+
+---
+
+# 14. ISP  (Router ISR 4331 + NIM-2T) - đầu DCE
+
+```bash
+enable
+conf t
+hostname ISP
+no ip domain-lookup
+
+interface serial0/1/0
+ description TO_EDGE-K
+ ip address 203.0.113.1 255.255.255.252
+ clock rate 64000
+ no shutdown
+
+interface serial0/1/1
+ description TO_ROUTER-V
+ ip address 198.51.100.1 255.255.255.252
+ clock rate 64000
+ no shutdown
+
+! Internet mo phong bang SERVER THAT 8.8.8.8 (noi qua switch vao Gi0/0/0).
+! Subnet 8.8.8.0/24, ISP la gateway 8.8.8.1, server dat tinh 8.8.8.8.
+! (Khong dung loopback de tranh dung IP /32 voi subnet /24.)
+interface gigabitEthernet0/0/0
+ description TO_INTERNET_SERVER
+ ip address 8.8.8.1 255.255.255.0
+ no shutdown
+
+end
+wr
+```
+
+---
+
+# 15. ROUTER-V  (Router ISR 4331 + NIM-2T)
+
+```bash
+enable
+conf t
+hostname ROUTER-V
+no ip domain-lookup
+
+interface serial0/1/0
+ description TO_ISP
+ ip address 198.51.100.2 255.255.255.252
+ ip nat outside
+ no shutdown
+
+interface gigabitEthernet0/0/0
+ description TRUNK_TO_AS-KHUV
+ no ip address
+ no shutdown
+
+interface gigabitEthernet0/0/0.260
+ description V_WIFI_GIAOVIEN
+ encapsulation dot1Q 260
+ ip address 10.20.60.1 255.255.255.0
+ ip nat inside
+
+interface gigabitEthernet0/0/0.270
+ description V_WIFI_SINHVIEN
+ encapsulation dot1Q 270
+ ip address 10.20.64.1 255.255.248.0
+ ip nat inside
+
+interface gigabitEthernet0/0/0.280
+ description V_AP_MGMT
+ encapsulation dot1Q 280
+ ip address 10.20.80.1 255.255.255.0
+ ip nat inside
+
+interface gigabitEthernet0/0/0.299
+ description V_NET_MGMT
+ encapsulation dot1Q 299
+ ip address 10.20.99.1 255.255.255.0
+ ip nat inside
+
+ip route 0.0.0.0 0.0.0.0 198.51.100.1
+
+! =========================
+! DHCP BRANCH
+! =========================
+ip dhcp excluded-address 10.20.60.1 10.20.60.20
+ip dhcp excluded-address 10.20.64.1 10.20.64.20
+ip dhcp excluded-address 10.20.80.1 10.20.80.20
+ip dhcp excluded-address 10.20.99.1 10.20.99.20
+
+ip dhcp pool V_WIFI_GIAOVIEN
+ network 10.20.60.0 255.255.255.0
+ default-router 10.20.60.1
+ dns-server 8.8.8.8
+
+ip dhcp pool V_WIFI_SINHVIEN
+ network 10.20.64.0 255.255.248.0
+ default-router 10.20.64.1
+ dns-server 8.8.8.8
+
+ip dhcp pool V_AP_MGMT
+ network 10.20.80.0 255.255.255.0
+ default-router 10.20.80.1
+ dns-server 8.8.8.8
+ option 43 ip 10.10.99.30
+
+ip dhcp pool V_NET_MGMT
+ network 10.20.99.0 255.255.255.0
+ default-router 10.20.99.1
+ dns-server 8.8.8.8
+
+! =========================
+! NAT BRANCH (khong NAT traffic di VPN sang khu K)
+! =========================
+ip access-list extended NAT_V
+ deny ip 10.20.0.0 0.0.255.255 10.10.0.0 0.0.255.255
+ permit ip 10.20.0.0 0.0.255.255 any
+exit
+
+ip nat inside source list NAT_V interface serial0/1/0 overload
+
+! =========================
+! IPSEC VPN
+! =========================
+crypto isakmp policy 10
+ encr aes
+ hash sha
+ authentication pre-share
+ group 2
+ lifetime 86400
+exit
+
+crypto isakmp key VKU-VPN-KEY address 203.0.113.2
+
+crypto ipsec transform-set TS-VKU esp-aes esp-sha-hmac
+
+ip access-list extended VPN_TRAFFIC
+ permit ip 10.20.0.0 0.0.255.255 10.10.0.0 0.0.255.255
+exit
+
+crypto map VPN-MAP 10 ipsec-isakmp
+ description VPN_TO_KHU_K
+ set peer 203.0.113.2
+ set transform-set TS-VKU
+ match address VPN_TRAFFIC
+exit
+
+interface serial0/1/0
+ crypto map VPN-MAP
+exit
+
+end
+wr
+```
+
+---
+
+# 16. AS-KHUV  (Switch 2960)
+
+```bash
+enable
+conf t
+hostname AS-KHUV
+no ip domain-lookup
+
+vtp mode transparent
+vlan 260
+ name V_WIFI_GIAOVIEN
+vlan 270
+ name V_WIFI_SINHVIEN
+vlan 280
+ name V_AP_MGMT
+vlan 299
+ name V_NET_MGMT
+
+spanning-tree mode rapid-pvst
+
+! =========================
+! TRUNK LEN ROUTER-V
+! =========================
+interface gigabitEthernet0/1
+ description TRUNK_TO_ROUTER-V
+ switchport mode trunk
+ switchport trunk allowed vlan 260,270,280,299
+ no shutdown
+
+! =========================
+! VLAN 260 - WIFI GIAO VIEN  (fa0/1-7)
+! =========================
+interface range fastEthernet0/1 - 7
+ description PC_V_WIFI_GIAOVIEN
+ switchport mode access
+ switchport access vlan 260
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+! =========================
+! VLAN 270 - WIFI SINH VIEN  (fa0/8-14)
+! =========================
+interface range fastEthernet0/8 - 14
+ description PC_V_WIFI_SINHVIEN
+ switchport mode access
+ switchport access vlan 270
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+! =========================
+! VLAN 299 - NET MGMT  (fa0/15-19)
+! =========================
+interface range fastEthernet0/15 - 19
+ description PC_V_NET_MGMT
+ switchport mode access
+ switchport access vlan 299
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+! =========================
+! VLAN 280 - AP MGMT  (fa0/20-24)
+! =========================
+interface range fastEthernet0/20 - 24
+ description LIGHTWEIGHT_AP_KHU_V
+ switchport mode access
+ switchport access vlan 280
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ no shutdown
+
+! =========================
+! QUAN LY SWITCH
+! =========================
+interface vlan299
+ description MANAGEMENT_INTERFACE
+ ip address 10.20.99.2 255.255.255.0
+ no shutdown
+
+ip default-gateway 10.20.99.1
+
+end
+wr
+```
+
+---
+
+# 17. Lệnh kiểm tra
+
+Trên CORE:
+```bash
+show vlan brief
+show interfaces trunk
+show spanning-tree summary
+show standby brief
+show etherchannel summary
+show ip route
+show ip interface brief
+show access-lists
+```
+
+Trên ACCESS:
+```bash
+show port-security
+show ip dhcp snooping
+show ip dhcp snooping binding
+show ip arp inspection
+```
+
+Trên EDGE-K / ROUTER-V:
+```bash
+show ip nat translations
+show ip nat statistics
+show crypto isakmp sa
+show crypto ipsec sa
+```
+
+Ping kiểm tra liên thông (làm sau khi mạng hội tụ ~1-2 phút cho STP/HSRP):
+```bash
+ping 10.10.100.4
+ping 172.16.0.1
+ping 203.0.113.1
+ping 198.51.100.2
+ping 8.8.8.8
+```
+
+---
+
+# 18. IP tĩnh cần đặt trên thiết bị (GUI, không phải CLI)
+
+Server-PT (Desktop > IP Configuration), gateway là HSRP VIP 10.10.200.1:
+
+| Server            |           IP |            Mask |     Gateway | Cắm vào                  |
+| ----------------- | -----------: | --------------: | ----------: | ------------------------ |
+| WEB_SERVER_NOI_BO |  10.10.200.2 | 255.255.255.240 | 10.10.200.1 | AS-SERVER-PRIVATE fa0/1  |
+| DHCP_DNS_SERVER   |  10.10.200.4 | 255.255.255.240 | 10.10.200.1 | AS-SERVER-PRIVATE fa0/2  |
+| DATABASE_SERVER   |  10.10.200.5 | 255.255.255.240 | 10.10.200.1 | AS-SERVER-PRIVATE fa0/3  |
+| FILE_APP_SERVER   |  10.10.200.6 | 255.255.255.240 | 10.10.200.1 | AS-SERVER-PRIVATE fa0/4  |
+| DMZ_WEB_SERVER    | 172.16.10.10 |   255.255.255.0 | 172.16.10.1 | ASA-K Gi1/4 (dmz)        |
+| WLC               |  10.10.99.30 |   255.255.255.0 |  10.10.99.1 | CORE fa0/23 (trunk)      |
+
+Trên DHCP Server 10.10.200.4 (Services > DHCP), tạo các pool:
+
+| Pool          | Default Gateway | DNS Server  | Start IP    | Subnet Mask     |
+| ------------- | --------------- | ----------- | ----------- | --------------- |
+| BGH_ADMIN     | 10.10.10.1      | 10.10.200.4 | 10.10.10.10 | 255.255.255.0   |
+| ESTI          | 10.10.20.1      | 10.10.200.4 | 10.10.20.10 | 255.255.255.0   |
+| LAB           | 10.10.30.1      | 10.10.200.4 | 10.10.30.10 | 255.255.255.0   |
+| TOA_B_THUONG  | 10.10.40.1      | 10.10.200.4 | 10.10.40.10 | 255.255.255.0   |
+| TOA_C         | 10.10.50.1      | 10.10.200.4 | 10.10.50.10 | 255.255.255.0   |
+| D1_VKU_STAFF  | 10.10.70.1      | 10.10.200.4 | 10.10.70.10 | 255.255.255.0   |
+| TOA_A         | 10.10.80.1      | 10.10.200.4 | 10.10.80.10 | 255.255.255.0   |
+| AP_MGMT       | 10.10.110.1     | 10.10.200.4 | 10.10.110.10| 255.255.255.0   |
+| WIFI_GIAOVIEN | 10.10.120.1     | 10.10.200.4 | 10.10.120.10| 255.255.255.0   |
+| WIFI_SINHVIEN | 10.10.128.1     | 10.10.200.4 | 10.10.128.10| 255.255.248.0   |
+
+Lưu ý DHCP cho AP_MGMT (Option 43 trỏ WLC): Server-PT bản cũ không có ô Option 43.
+Nếu cần Option 43 cho VLAN 110, nhập tay IP WLC vào AP, hoặc để L3 cấp DHCP riêng pool đó.
+Khu V đã có Option 43 do ROUTER-V cấp DHCP (đã cấu hình ở mục 15).
+
+========================================================================
+TÓM TẮT THAY ĐỔI SO VỚI BẢN GỐC:
+1. ASA: chuyển sang ASA 5506-X (GigabitEthernet1/x, routed interface).
+   Bỏ "switchport + interface vlanX" (kiến trúc 5505). Bỏ "no forward" (5506-X không giới hạn zone).
+   3 vùng: inside Gi1/3 / dmz Gi1/4 / outside Gi1/2. Gi1/1 dành cho management-only.
+2. Server Farm: thành VLAN 200 định tuyến trên CORE (HSRP VIP 10.10.200.1).
+   Core SVI dùng .12/.13 để không đụng IP server (.2/.4/.5/.6). AS-SERVER-PRIVATE nối CORE.
+3. Sửa lỗi cú pháp EDGE-K: bỏ ký tự "1" lạc, bỏ crypto map gán trùng (chỉ gán 1 lần).
+4. Bỏ "ip verify source" (Packet Tracer không hỗ trợ, sẽ báo lỗi khi paste).
+5. Thêm "switchport trunk encapsulation dot1q" cho switch 3560 (bắt buộc trước khi set trunk).
+6. Thêm "no ip dhcp snooping information option" (tránh DHCP bị chèn option 82 và rớt gói).
+7. VOICE (VLAN 90): cho phép trên trunk AS-HANHCHINH + cổng PC dùng voice vlan, port-security max 3.
+8. TẤT CẢ switch đặt vtp mode transparent + tự định nghĩa VLAN cục bộ
+   (tránh lỗi VTP: switch revision cao ghi đè làm mất sạch VLAN database trên Core).
+9. Quản lý AS-SERVER-PRIVATE chuyển về VLAN 99 (10.10.99.18).
+========================================================================
